@@ -1,0 +1,127 @@
+name: Publish FP32 model
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: kfa-fp32-v1
+  MODEL_ID: kfa-fp32-v1
+  KFA_COMMIT: da7dbfb66dff38964343e175934068b848906ce0
+  KHMER_CUT_COMMIT: 0b8fc1b794e7dc06c4bf98aa1706dcebffa540f0
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download pinned runtime assets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p dist
+
+          curl --fail --location --retry 5 \
+            "https://huggingface.co/seanghay/wav2vec2-base-khmer-phonetisaurus/resolve/main/wav2vec2-km-base-1500.onnx?download=true" \
+            -o dist/wav2vec2-km-base-1500.onnx
+
+          curl --fail --location --retry 5 \
+            "https://raw.githubusercontent.com/seanghay/kfa/${KFA_COMMIT}/kfa/g2p.fst" \
+            -o dist/g2p.fst
+
+          curl --fail --location --retry 5 \
+            "https://raw.githubusercontent.com/seanghay/kfa/${KFA_COMMIT}/kfa/lexicon.pkl" \
+            -o /tmp/lexicon.pkl
+
+          curl --fail --location --retry 5 \
+            "https://raw.githubusercontent.com/seanghay/khmercut-rs/${KHMER_CUT_COMMIT}/src/crf_ner_10000.crfsuite" \
+            -o dist/khmercut.crfsuite
+
+      - name: Convert KFA lexicon to portable TSV
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pickle
+          from pathlib import Path
+
+          source = Path("/tmp/lexicon.pkl")
+          output = Path("dist/lexicon.tsv")
+          with source.open("rb") as fh:
+              lexicon = pickle.load(fh)
+
+          with output.open("w", encoding="utf-8", newline="\n") as fh:
+              for word in sorted(lexicon):
+                  value = lexicon[word]
+                  phonemes = "".join(value) if not isinstance(value, str) else value
+                  if "\t" in word or "\n" in word or "\r" in word:
+                      raise ValueError(f"Unsupported lexicon key: {word!r}")
+                  fh.write(f"{word}\t{phonemes}\n")
+          PY
+
+      - name: Generate immutable manifest
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          repo = os.environ["REPOSITORY"]
+          names = [
+              "wav2vec2-km-base-1500.onnx",
+              "g2p.fst",
+              "khmercut.crfsuite",
+              "lexicon.tsv",
+          ]
+          files = []
+          for name in names:
+              path = Path("dist") / name
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              files.append({
+                  "name": name,
+                  "url": f"https://github.com/{repo}/releases/download/{tag}/{name}",
+                  "sizeBytes": path.stat().st_size,
+                  "sha256": digest,
+              })
+
+          manifest = {
+              "id": os.environ["MODEL_ID"],
+              "engine": "kfa",
+              "precision": "fp32",
+              "sampleRate": 16000,
+              "releaseTag": tag,
+              "files": files,
+          }
+          Path("dist/model-manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          cat dist/model-manifest.json
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; refusing to mutate an immutable model release." >&2
+            exit 1
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            --title "KFA FP32 v1" \
+            --notes "FP32 correctness baseline for Nocturne Studio offline Khmer forced alignment. See repository LICENSES.md for attribution." \
+            dist/wav2vec2-km-base-1500.onnx \
+            dist/g2p.fst \
+            dist/khmercut.crfsuite \
+            dist/lexicon.tsv \
+            dist/model-manifest.json
