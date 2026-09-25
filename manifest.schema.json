@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Nocturne Alignment Model Manifest",
+  "type": "object",
+  "required": ["id", "engine", "precision", "sampleRate", "releaseTag", "files"],
+  "properties": {
+    "id": { "type": "string" },
+    "engine": { "type": "string" },
+    "precision": { "enum": ["fp32", "int8"] },
+    "sampleRate": { "type": "integer", "const": 16000 },
+    "releaseTag": { "type": "string" },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "url", "sizeBytes", "sha256"],
+        "properties": {
+          "name": { "type": "string" },
+          "url": { "type": "string", "format": "uri" },
+          "sizeBytes": { "type": "integer", "minimum": 1 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
