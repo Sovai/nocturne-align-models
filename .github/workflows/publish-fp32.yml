@@ -2,6 +2,9 @@ name: Publish FP32 model
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".release/kfa-fp32-v1"
 
 permissions:
   contents: write
